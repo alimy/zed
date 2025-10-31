@@ -283,8 +283,23 @@ enum TargetStatus {
 struct PendingOperation {
     finished: bool,
     target_status: TargetStatus,
-    entries: Vec<GitStatusEntry>,
+    entries: PendingEntries,
     op_id: usize,
+}
+
+#[derive(Debug)]
+enum PendingEntries {
+    All,
+    Selected(Vec<GitStatusEntry>),
+}
+
+impl PendingEntries {
+    fn contains_path(&self, path: &RepoPath) -> bool {
+        match self {
+            Self::All => true,
+            Self::Selected(entries) => entries.iter().any(|pending| &pending.repo_path == path),
+        }
+    }
 }
 
 pub struct GitPanel {
@@ -1012,7 +1027,7 @@ impl GitPanel {
         self.pending.push(PendingOperation {
             op_id,
             target_status: TargetStatus::Reverted,
-            entries: entries.clone(),
+            entries: PendingEntries::Selected(entries.clone()),
             finished: false,
         });
         self.update_visible_entries(window, cx);
@@ -1209,14 +1224,42 @@ impl GitPanel {
     }
 
     pub fn stage_all(&mut self, _: &StageAll, _window: &mut Window, cx: &mut Context<Self>) {
-        let entries = self
-            .entries
-            .iter()
-            .filter_map(|entry| entry.status_entry())
-            .filter(|status_entry| status_entry.staging.has_unstaged())
-            .cloned()
-            .collect::<Vec<_>>();
-        self.change_file_stage(true, entries, cx);
+        let Some(active_repository) = self.active_repository.clone() else {
+            return;
+        };
+        let op_id = self.pending.iter().map(|p| p.op_id).max().unwrap_or(0) + 1;
+        self.pending.push(PendingOperation {
+            op_id,
+            target_status: TargetStatus::Staged,
+            entries: PendingEntries::All,
+            finished: false,
+        });
+        let repository = active_repository.read(cx);
+        self.update_counts(repository);
+        cx.notify();
+
+        cx.spawn({
+            async move |this, cx| {
+                let result = cx
+                    .update(|cx| active_repository.update(cx, |repo, cx| repo.stage_all(cx)))?
+                    .await;
+
+                this.update(cx, |this, cx| {
+                    for pending in this.pending.iter_mut() {
+                        if pending.op_id == op_id {
+                            pending.finished = true
+                        }
+                    }
+                    result
+                        .map_err(|e| {
+                            this.show_error_toast("add", e, cx);
+                        })
+                        .ok();
+                    cx.notify();
+                })
+            }
+        })
+        .detach();
     }
 
     pub fn unstage_all(&mut self, _: &UnstageAll, _window: &mut Window, cx: &mut Context<Self>) {
@@ -1227,6 +1270,7 @@ impl GitPanel {
             .filter(|status_entry| status_entry.staging.has_staged())
             .cloned()
             .collect::<Vec<_>>();
+        dbg!(&entries);
         self.change_file_stage(false, entries, cx);
     }
 
@@ -1294,7 +1338,7 @@ impl GitPanel {
             } else {
                 TargetStatus::Unstaged
             },
-            entries: entries.clone(),
+            entries: PendingEntries::Selected(entries.clone()),
             finished: false,
         });
         let repository = active_repository.read(cx);
@@ -2680,10 +2724,7 @@ impl GitPanel {
             if self.pending.iter().any(|pending| {
                 pending.target_status == TargetStatus::Reverted
                     && !pending.finished
-                    && pending
-                        .entries
-                        .iter()
-                        .any(|pending| pending.repo_path == entry.repo_path)
+                    && pending.entries.contains_path(&entry.repo_path)
             }) {
                 continue;
             }
@@ -2725,19 +2766,23 @@ impl GitPanel {
             }
         }
 
-        let mut pending_staged_count = 0;
+        let mut pending_staged_count = 0usize;
         let mut last_pending_staged = None;
         let mut pending_status_for_single_staged = None;
         for pending in self.pending.iter() {
             if pending.target_status == TargetStatus::Staged {
-                pending_staged_count += pending.entries.len();
-                last_pending_staged = pending.entries.first().cloned();
+                pending_staged_count =
+                    pending_staged_count.saturating_add(match &pending.entries {
+                        PendingEntries::All => usize::MAX,
+                        PendingEntries::Selected(entries) => entries.len(),
+                    });
+                last_pending_staged = match &pending.entries {
+                    PendingEntries::All => None,
+                    PendingEntries::Selected(entries) => entries.first().cloned(),
+                };
             }
             if let Some(single_staged) = &single_staged_entry
-                && pending
-                    .entries
-                    .iter()
-                    .any(|entry| entry.repo_path == single_staged.repo_path)
+                && pending.entries.contains_path(&single_staged.repo_path)
             {
                 pending_status_for_single_staged = Some(pending.target_status);
             }
@@ -2879,11 +2924,7 @@ impl GitPanel {
 
     fn entry_staging(&self, entry: &GitStatusEntry) -> Option<StageStatus> {
         for pending in self.pending.iter().rev() {
-            if pending
-                .entries
-                .iter()
-                .any(|pending_entry| pending_entry.repo_path == entry.repo_path)
-            {
+            if pending.entries.contains_path(&entry.repo_path) {
                 match pending.target_status {
                     TargetStatus::Staged => return Some(StageStatus::Staged),
                     TargetStatus::Unstaged => return Some(StageStatus::Unstaged),
