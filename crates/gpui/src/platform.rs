@@ -568,14 +568,15 @@ pub struct RunnableMeta {
 }
 
 #[doc(hidden)]
+#[derive(Debug, Clone)]
 pub struct TaskTiming {
-    location: &'static core::panic::Location<'static>,
-    start: Instant,
-    end: Instant,
+    pub location: &'static core::panic::Location<'static>,
+    pub start: Instant,
+    pub end: Instant,
 }
 
 // Allow 20mb of task timing entries
-const MAX_TASK_TIMINGS: usize = core::mem::size_of::<TaskTiming>() / (20 * 1024 * 1024);
+const MAX_TASK_TIMINGS: usize = (20 * 1024 * 1024) / core::mem::size_of::<TaskTiming>();
 
 type TaskTimings = circular_buffer::CircularBuffer<MAX_TASK_TIMINGS, TaskTiming>;
 
@@ -583,7 +584,7 @@ type TaskTimings = circular_buffer::CircularBuffer<MAX_TASK_TIMINGS, TaskTiming>
 /// be considered part of our public API.
 #[doc(hidden)]
 pub trait PlatformDispatcher: Send + Sync {
-    // fn with_current_thread_timings(&self, cb: dyn FnOnce(&TaskTimings) + Sized);
+    fn get_current_thread_timings(&self) -> Vec<TaskTiming>;
     fn is_main_thread(&self) -> bool;
     fn dispatch(&self, runnable: Runnable<RunnableMeta>, label: Option<TaskLabel>);
     fn dispatch_on_main_thread(&self, runnable: Runnable<RunnableMeta>);

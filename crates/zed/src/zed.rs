@@ -31,9 +31,9 @@ use git_ui::project_diff::ProjectDiffToolbar;
 use gpui::{
     Action, App, AppContext as _, AsyncApp, Context, DismissEvent, Element, Entity, EventEmitter,
     FRAME_RING, FocusHandle, Focusable, FrameTimings, Hsla, KeyBinding, MouseButton, ParentElement,
-    PathPromptOptions, PromptLevel, ReadGlobal, SharedString, Styled, Task, TitlebarOptions,
-    UpdateGlobal, Window, WindowKind, WindowOptions, actions, get_all_timings, get_frame_timings,
-    hsla, image_cache, point, px, retain_all, rgb, rgba,
+    PathPromptOptions, PromptLevel, ReadGlobal, SharedString, Styled, Task, TaskTiming,
+    TitlebarOptions, UpdateGlobal, Window, WindowKind, WindowOptions, actions, get_all_timings,
+    get_frame_timings, hsla, image_cache, point, px, retain_all, rgb, rgba,
 };
 use image_viewer::ImageInfo;
 use language::Capability;
@@ -64,6 +64,7 @@ use settings::{
     initial_local_debug_tasks_content, initial_project_settings_content, initial_tasks_content,
     update_settings_file,
 };
+use std::ops::Range;
 use std::time::Duration;
 use std::{
     borrow::Cow,
@@ -573,11 +574,8 @@ fn show_software_emulation_warning_if_needed(
 actions!(timings, [ToggleFocus,]);
 
 enum DataMode {
-    Realtime(Option<FrameTimings>),
-    Capture {
-        selected_index: usize,
-        data: Vec<FrameTimings>,
-    },
+    Realtime(Option<Vec<TaskTiming>>),
+    Capture(Vec<TaskTiming>),
 }
 
 struct TimingsPanel {
@@ -604,7 +602,10 @@ impl TimingsPanel {
     fn begin_listen(cx: &mut Context<Self>) -> Task<()> {
         cx.spawn(async move |this, cx| {
             loop {
-                let data = get_frame_timings();
+                let data = cx
+                    .foreground_executor()
+                    .dispatcher
+                    .get_current_thread_timings();
 
                 this.update(cx, |this: &mut TimingsPanel, cx| {
                     this.data = DataMode::Realtime(Some(data));
@@ -618,18 +619,24 @@ impl TimingsPanel {
         })
     }
 
-    fn get_timings(&self) -> Option<&FrameTimings> {
+    fn get_timings(&self) -> Option<&Vec<TaskTiming>> {
         match &self.data {
             DataMode::Realtime(data) => data.as_ref(),
-            DataMode::Capture {
-                data,
-                selected_index,
-            } => Some(&data[*selected_index]),
+            DataMode::Capture(data) => Some(data),
         }
     }
 
-    fn render_bar(&self, max_value: f32, item: BarChartItem, cx: &App) -> impl IntoElement {
-        let fill_width = (item.value / max_value).max(0.02); // Minimum 2% width for visibility
+    fn render_bar(
+        &self,
+        value_range: Range<f32>,
+        item: BarChartItem,
+        cx: &App,
+    ) -> impl IntoElement {
+        let remap_end = value_range.end - value_range.start;
+        let start = (item.start - value_range.start) / remap_end;
+        let end = (item.end - value_range.start) / remap_end;
+
+        let bar_width = end - start;
         let label = format!(
             "{}:{}:{}",
             item.location
@@ -665,14 +672,17 @@ impl TimingsPanel {
                     .bg(cx.theme().colors().background)
                     .rounded_md()
                     .p(px(2.0))
+                    .relative()
                     .child(
-                        // Bar fill with minimum width
+                        // Bar fill positioned from start to end
                         div()
+                            .absolute()
                             .h_full()
                             .rounded_sm()
                             .bg(item.color)
                             .min_w(px(4.0)) // Minimum width so tiny values are still visible
-                            .w(relative(fill_width)),
+                            .left(relative(start))
+                            .w(relative(bar_width.max(0.02))), // Minimum 2% width for visibility
                     ),
             )
             .child(
@@ -681,7 +691,7 @@ impl TimingsPanel {
                     .min_w(px(60.0))
                     .flex_shrink_0()
                     .text_right()
-                    .child(format!("{:.1} {}", fill_width, item.value)),
+                    .child(format!("{:.1}", bar_width)),
             )
     }
 }
@@ -750,7 +760,8 @@ impl RenderOnce for DiscreteSlider {
 
 struct BarChartItem {
     location: &'static core::panic::Location<'static>,
-    value: f32,
+    start: f32,
+    end: f32,
     color: Hsla,
 }
 
@@ -825,61 +836,39 @@ impl Render for TimingsPanel {
                 )
                 .style(ButtonStyle::Filled)
                 .on_click(cx.listener(|this, _, window, cx| {
-                    match this.data {
-                        DataMode::Realtime(_) => {
-                            let (data, selected_index) = get_all_timings();
+                    match &this.data {
+                        DataMode::Realtime(Some(data)) => {
                             this._refresh = None;
-                            this.data = DataMode::Capture {
-                                selected_index,
-                                data,
-                            };
+                            this.data = DataMode::Capture(data.clone());
                         }
                         DataMode::Capture { .. } => {
                             this._refresh = Some(Self::begin_listen(cx));
                             this.data = DataMode::Realtime(None);
                         }
+                        _ => {}
                     };
                     cx.notify();
                 })),
             )
-            .when(matches!(self.data, DataMode::Capture { .. }), |this| {
-                let DataMode::Capture {
-                    selected_index,
-                    data,
-                } = &self.data
-                else {
-                    unreachable!();
-                };
-
-                let entity = cx.entity().downgrade();
-                this.child(DiscreteSlider::new(
-                    *selected_index,
-                    data.len(),
-                    move |value, _window, cx| {
-                        if let Some(entity) = entity.upgrade() {
-                            entity.update(cx, |this, cx| {
-                                if let DataMode::Capture { selected_index, .. } = &mut this.data {
-                                    *selected_index = value;
-                                    cx.notify();
-                                }
-                            });
-                        }
-                    },
-                ))
-            })
             .when_some(self.get_timings(), |div, e| {
-                div.child(format!("{}", e.frame_time))
-                    .children(e.timings.iter().enumerate().map(|(i, (name, value))| {
-                        self.render_bar(
-                            e.frame_time as f32,
-                            BarChartItem {
-                                location: name,
-                                value: *value as f32,
-                                color: cx.theme().accents().color_for_index(i as u32),
-                            },
-                            cx,
-                        )
-                    }))
+                if e.len() == 0 {
+                    return div;
+                }
+
+                let min = e[0].start;
+                let max = e[e.len() - 1].end;
+                div.children(e.iter().enumerate().map(|(i, timing)| {
+                    self.render_bar(
+                        0f32..max.duration_since(min).as_secs_f32() * 1000f32,
+                        BarChartItem {
+                            location: timing.location,
+                            start: timing.start.duration_since(min).as_secs_f32() * 1000f32,
+                            end: timing.end.duration_since(min).as_secs_f32() * 1000f32,
+                            color: cx.theme().accents().color_for_index(i as u32),
+                        },
+                        cx,
+                    )
+                }))
             })
     }
 }

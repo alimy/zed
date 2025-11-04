@@ -35,9 +35,16 @@ thread_local! {
 }
 
 impl PlatformDispatcher for MacDispatcher {
-    // fn with_current_thread_timings(&self, cb: dyn FnOnce(&crate::platform::TaskTimings)) {
-    //     THREAD_TIMINGS.with_borrow(|timings| cb(timings));
-    // }
+    fn get_current_thread_timings(&self) -> Vec<TaskTiming> {
+        THREAD_TIMINGS.with_borrow(|timings| {
+            println!("Timings: {} {}", timings.len(), timings.capacity());
+            let mut vec = Vec::new();
+            let (s1, s2) = timings.as_slices();
+            vec.extend_from_slice(s1);
+            vec.extend_from_slice(s2);
+            vec
+        })
+    }
 
     fn is_main_thread(&self) -> bool {
         let is_main_thread: BOOL = unsafe { msg_send![class!(NSThread), isMainThread] };
