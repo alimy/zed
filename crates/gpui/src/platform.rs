@@ -45,7 +45,6 @@ use crate::{
 };
 use anyhow::Result;
 use async_task::Runnable;
-use collections::HashMap;
 use futures::channel::oneshot;
 use image::codecs::gif::GifDecoder;
 use image::{AnimationDecoder as _, Frame};
@@ -58,7 +57,6 @@ use std::borrow::Cow;
 use std::hash::{Hash, Hasher};
 use std::io::Cursor;
 use std::ops;
-use std::sync::atomic::AtomicUsize;
 use std::time::{Duration, Instant};
 use std::{
     fmt::{self, Debug},
@@ -575,6 +573,12 @@ pub struct TaskTiming {
     pub end: Instant,
 }
 
+#[doc(hidden)]
+pub enum RunnableVariant {
+    Meta(Runnable<RunnableMeta>),
+    Compat(Runnable),
+}
+
 // Allow 20mb of task timing entries
 const MAX_TASK_TIMINGS: usize = (20 * 1024 * 1024) / core::mem::size_of::<TaskTiming>();
 
@@ -586,12 +590,9 @@ type TaskTimings = circular_buffer::CircularBuffer<MAX_TASK_TIMINGS, TaskTiming>
 pub trait PlatformDispatcher: Send + Sync {
     fn get_current_thread_timings(&self) -> Vec<TaskTiming>;
     fn is_main_thread(&self) -> bool;
-    fn dispatch(&self, runnable: Runnable<RunnableMeta>, label: Option<TaskLabel>);
-    fn dispatch_on_main_thread(&self, runnable: Runnable<RunnableMeta>);
-    fn dispatch_after(&self, duration: Duration, runnable: Runnable<RunnableMeta>);
-
-    fn dispatch_compat(&self, runnable: Runnable);
-    fn dispatch_after_compat(&self, duration: Duration, runnable: Runnable);
+    fn dispatch(&self, runnable: RunnableVariant, label: Option<TaskLabel>);
+    fn dispatch_on_main_thread(&self, runnable: RunnableVariant);
+    fn dispatch_after(&self, duration: Duration, runnable: RunnableVariant);
 
     fn now(&self) -> Instant {
         Instant::now()

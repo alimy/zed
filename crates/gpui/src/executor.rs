@@ -1,4 +1,4 @@
-use crate::{App, PlatformDispatcher, RunnableMeta};
+use crate::{App, PlatformDispatcher, RunnableMeta, RunnableVariant};
 use async_task::Runnable;
 use futures::channel::mpsc;
 use smol::prelude::*;
@@ -173,7 +173,7 @@ impl BackgroundExecutor {
             .metadata(RunnableMeta { location })
             .spawn(
                 move |_| future,
-                move |runnable| dispatcher.dispatch(runnable, label),
+                move |runnable| dispatcher.dispatch(RunnableVariant::Meta(runnable), label),
             );
         runnable.schedule();
         Task(TaskState::Spawned(task))
@@ -368,7 +368,7 @@ impl BackgroundExecutor {
             .metadata(RunnableMeta { location })
             .spawn(move |_| async move {}, {
                 let dispatcher = self.dispatcher.clone();
-                move |runnable| dispatcher.dispatch_after(duration, runnable)
+                move |runnable| dispatcher.dispatch_after(duration, RunnableVariant::Meta(runnable))
             });
         runnable.schedule();
         Task(TaskState::Spawned(task))
@@ -492,7 +492,7 @@ impl ForegroundExecutor {
         ) -> Task<R> {
             let (runnable, task) = spawn_local_with_source_location(
                 future,
-                move |runnable| dispatcher.dispatch_on_main_thread(runnable),
+                move |runnable| dispatcher.dispatch_on_main_thread(RunnableVariant::Meta(runnable)),
                 RunnableMeta { location },
             );
             runnable.schedule();

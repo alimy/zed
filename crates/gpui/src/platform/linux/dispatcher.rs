@@ -1,11 +1,11 @@
-use crate::{PlatformDispatcher, TaskLabel};
-use async_task::Runnable;
+use crate::{PlatformDispatcher, RunnableVariant, TaskLabel, TaskTiming};
 use calloop::{
     EventLoop,
     channel::{self, Sender},
     timer::TimeoutAction,
 };
 use std::{
+    cell::RefCell,
     thread,
     time::{Duration, Instant},
 };
@@ -13,20 +13,24 @@ use util::ResultExt;
 
 struct TimerAfter {
     duration: Duration,
-    runnable: Runnable,
+    runnable: RunnableVariant,
 }
 
 pub(crate) struct LinuxDispatcher {
-    main_sender: Sender<Runnable>,
+    main_sender: Sender<RunnableVariant>,
     timer_sender: Sender<TimerAfter>,
-    background_sender: flume::Sender<Runnable>,
+    background_sender: flume::Sender<RunnableVariant>,
     _background_threads: Vec<thread::JoinHandle<()>>,
     main_thread_id: thread::ThreadId,
 }
 
+thread_local! {
+  static THREAD_TIMINGS: RefCell<Box<crate::platform::TaskTimings>> = RefCell::new(crate::platform::TaskTimings::boxed());
+}
+
 impl LinuxDispatcher {
-    pub fn new(main_sender: Sender<Runnable>) -> Self {
-        let (background_sender, background_receiver) = flume::unbounded::<Runnable>();
+    pub fn new(main_sender: Sender<RunnableVariant>) -> Self {
+        let (background_sender, background_receiver) = flume::unbounded::<RunnableVariant>();
         let thread_count = std::thread::available_parallelism()
             .map(|i| i.get())
             .unwrap_or(1);
@@ -40,7 +44,24 @@ impl LinuxDispatcher {
                         for runnable in receiver {
                             let start = Instant::now();
 
-                            runnable.run();
+                            let location = match runnable {
+                                RunnableVariant::Meta(runnable) => {
+                                    let location = runnable.metadata().location;
+                                    runnable.run();
+                                    location
+                                }
+                                RunnableVariant::Compat(runnable) => {
+                                    runnable.run();
+                                    core::panic::Location::caller()
+                                }
+                            };
+                            let end = Instant::now();
+
+                            Self::add_task_timing(TaskTiming {
+                                location,
+                                start,
+                                end,
+                            });
 
                             log::trace!(
                                 "background thread {}: ran runnable. took: {:?}",
@@ -72,7 +93,25 @@ impl LinuxDispatcher {
                                     calloop::timer::Timer::from_duration(timer.duration),
                                     move |_, _, _| {
                                         if let Some(runnable) = runnable.take() {
-                                            runnable.run();
+                                            let start = Instant::now();
+                                            let location = match runnable {
+                                                RunnableVariant::Meta(runnable) => {
+                                                    let location = runnable.metadata().location;
+                                                    runnable.run();
+                                                    location
+                                                }
+                                                RunnableVariant::Compat(runnable) => {
+                                                    runnable.run();
+                                                    core::panic::Location::caller()
+                                                }
+                                            };
+                                            let end = Instant::now();
+
+                                            Self::add_task_timing(TaskTiming {
+                                                location,
+                                                start,
+                                                end,
+                                            });
                                         }
                                         TimeoutAction::Drop
                                     },
@@ -96,18 +135,42 @@ impl LinuxDispatcher {
             main_thread_id: thread::current().id(),
         }
     }
+
+    pub(crate) fn add_task_timing(timing: TaskTiming) {
+        THREAD_TIMINGS.with_borrow_mut(|timings| {
+            if let Some(last_timing) = timings.iter_mut().rev().next() {
+                if last_timing.location == timing.location {
+                    last_timing.end = timing.end;
+                    return;
+                }
+            }
+
+            timings.push_back(timing);
+        });
+    }
 }
 
 impl PlatformDispatcher for LinuxDispatcher {
+    fn get_current_thread_timings(&self) -> Vec<crate::TaskTiming> {
+        THREAD_TIMINGS.with_borrow(|timings| {
+            let mut vec = Vec::with_capacity(timings.len());
+
+            let (s1, s2) = timings.as_slices();
+            vec.extend_from_slice(s1);
+            vec.extend_from_slice(s2);
+            vec
+        })
+    }
+
     fn is_main_thread(&self) -> bool {
         thread::current().id() == self.main_thread_id
     }
 
-    fn dispatch(&self, runnable: Runnable, _: Option<TaskLabel>) {
+    fn dispatch(&self, runnable: RunnableVariant, _: Option<TaskLabel>) {
         self.background_sender.send(runnable).unwrap();
     }
 
-    fn dispatch_on_main_thread(&self, runnable: Runnable) {
+    fn dispatch_on_main_thread(&self, runnable: RunnableVariant) {
         self.main_sender.send(runnable).unwrap_or_else(|runnable| {
             // NOTE: Runnable may wrap a Future that is !Send.
             //
@@ -121,7 +184,7 @@ impl PlatformDispatcher for LinuxDispatcher {
         });
     }
 
-    fn dispatch_after(&self, duration: Duration, runnable: Runnable) {
+    fn dispatch_after(&self, duration: Duration, runnable: RunnableVariant) {
         self.timer_sender
             .send(TimerAfter { duration, runnable })
             .ok();
