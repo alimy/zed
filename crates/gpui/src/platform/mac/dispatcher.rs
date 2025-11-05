@@ -31,14 +31,15 @@ pub(crate) fn dispatch_get_main_queue() -> dispatch_queue_t {
 pub(crate) struct MacDispatcher;
 
 thread_local! {
-    static THREAD_TIMINGS: RefCell<crate::platform::TaskTimings> = RefCell::new(crate::platform::TaskTimings::new());
+    static THREAD_TIMINGS: RefCell<Box<crate::platform::TaskTimings>> = RefCell::new(crate::platform::TaskTimings::boxed());
 }
 
 impl PlatformDispatcher for MacDispatcher {
     fn get_current_thread_timings(&self) -> Vec<TaskTiming> {
         THREAD_TIMINGS.with_borrow(|timings| {
-            println!("Timings: {} {}", timings.len(), timings.capacity());
             let mut vec = Vec::new();
+            vec.reserve(timings.len());
+
             let (s1, s2) = timings.as_slices();
             vec.extend_from_slice(s1);
             vec.extend_from_slice(s2);
@@ -127,6 +128,13 @@ extern "C" fn trampoline(runnable: *mut c_void) {
     };
 
     THREAD_TIMINGS.with_borrow_mut(|timings| {
+        if let Some(last_timing) = timings.iter_mut().rev().next() {
+            if last_timing.location == timing.location {
+                last_timing.end = timing.end;
+                return;
+            }
+        }
+
         timings.push_back(timing);
     });
 }

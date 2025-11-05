@@ -680,9 +680,8 @@ impl TimingsPanel {
                             .h_full()
                             .rounded_sm()
                             .bg(item.color)
-                            .min_w(px(4.0)) // Minimum width so tiny values are still visible
                             .left(relative(start))
-                            .w(relative(bar_width.max(0.02))), // Minimum 2% width for visibility
+                            .w(relative(bar_width)), // Minimum 2% width for visibility
                     ),
             )
             .child(
@@ -857,18 +856,23 @@ impl Render for TimingsPanel {
 
                 let min = e[0].start;
                 let max = e[e.len() - 1].end;
-                div.children(e.iter().enumerate().map(|(i, timing)| {
-                    self.render_bar(
-                        0f32..max.duration_since(min).as_secs_f32() * 1000f32,
-                        BarChartItem {
-                            location: timing.location,
-                            start: timing.start.duration_since(min).as_secs_f32() * 1000f32,
-                            end: timing.end.duration_since(min).as_secs_f32() * 1000f32,
-                            color: cx.theme().accents().color_for_index(i as u32),
-                        },
-                        cx,
-                    )
-                }))
+                div.children(
+                    e.iter()
+                        .filter(|timing| timing.end.duration_since(timing.start).as_millis() >= 1)
+                        .enumerate()
+                        .map(|(i, timing)| {
+                            self.render_bar(
+                                0f32..max.duration_since(min).as_secs_f32() * 1000f32,
+                                BarChartItem {
+                                    location: timing.location,
+                                    start: timing.start.duration_since(min).as_secs_f32() * 1000f32,
+                                    end: timing.end.duration_since(min).as_secs_f32() * 1000f32,
+                                    color: cx.theme().accents().color_for_index(i as u32),
+                                },
+                                cx,
+                            )
+                        }),
+                )
             })
     }
 }
