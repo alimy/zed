@@ -437,7 +437,7 @@ pub struct Usage {
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ChoiceDelta {
     pub index: u32,
-    pub delta: ResponseMessageDelta,
+    pub delta: Option<ResponseMessageDelta>,
     pub finish_reason: Option<String>,
 }
 
