@@ -2,7 +2,7 @@
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
 
-use crate::{PlatformDispatcher, RunnableMeta, TaskLabel, TaskTiming};
+use crate::{PlatformDispatcher, RunnableMeta, RunnableVariant, TaskLabel, TaskTiming};
 
 use async_task::Runnable;
 use objc::{
@@ -37,8 +37,7 @@ thread_local! {
 impl PlatformDispatcher for MacDispatcher {
     fn get_current_thread_timings(&self) -> Vec<TaskTiming> {
         THREAD_TIMINGS.with_borrow(|timings| {
-            let mut vec = Vec::new();
-            vec.reserve(timings.len());
+            let mut vec = Vec::with_capacity(timings.len());
 
             let (s1, s2) = timings.as_slices();
             vec.extend_from_slice(s1);
@@ -52,61 +51,58 @@ impl PlatformDispatcher for MacDispatcher {
         is_main_thread == YES
     }
 
-    fn dispatch(&self, runnable: Runnable<RunnableMeta>, _: Option<TaskLabel>) {
+    fn dispatch(&self, runnable: RunnableVariant, _: Option<TaskLabel>) {
+        let (context, trampoline) = match runnable {
+            RunnableVariant::Meta(runnable) => (
+                runnable.into_raw().as_ptr() as *mut c_void,
+                Some(trampoline as unsafe extern "C" fn(*mut c_void)),
+            ),
+            RunnableVariant::Compat(runnable) => (
+                runnable.into_raw().as_ptr() as *mut c_void,
+                Some(trampoline_compat as unsafe extern "C" fn(*mut c_void)),
+            ),
+        };
         unsafe {
             dispatch_async_f(
                 dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH.try_into().unwrap(), 0),
-                runnable.into_raw().as_ptr() as *mut c_void,
-                Some(trampoline),
+                context,
+                trampoline,
             );
         }
     }
 
-    fn dispatch_on_main_thread(&self, runnable: Runnable<RunnableMeta>) {
+    fn dispatch_on_main_thread(&self, runnable: RunnableVariant) {
+        let (context, trampoline) = match runnable {
+            RunnableVariant::Meta(runnable) => (
+                runnable.into_raw().as_ptr() as *mut c_void,
+                Some(trampoline as unsafe extern "C" fn(*mut c_void)),
+            ),
+            RunnableVariant::Compat(runnable) => (
+                runnable.into_raw().as_ptr() as *mut c_void,
+                Some(trampoline_compat as unsafe extern "C" fn(*mut c_void)),
+            ),
+        };
         unsafe {
-            dispatch_async_f(
-                dispatch_get_main_queue(),
-                runnable.into_raw().as_ptr() as *mut c_void,
-                Some(trampoline),
-            );
+            dispatch_async_f(dispatch_get_main_queue(), context, trampoline);
         }
     }
 
-    fn dispatch_after(&self, duration: Duration, runnable: Runnable<RunnableMeta>) {
+    fn dispatch_after(&self, duration: Duration, runnable: RunnableVariant) {
+        let (context, trampoline) = match runnable {
+            RunnableVariant::Meta(runnable) => (
+                runnable.into_raw().as_ptr() as *mut c_void,
+                Some(trampoline as unsafe extern "C" fn(*mut c_void)),
+            ),
+            RunnableVariant::Compat(runnable) => (
+                runnable.into_raw().as_ptr() as *mut c_void,
+                Some(trampoline_compat as unsafe extern "C" fn(*mut c_void)),
+            ),
+        };
         unsafe {
             let queue =
                 dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH.try_into().unwrap(), 0);
             let when = dispatch_time(DISPATCH_TIME_NOW as u64, duration.as_nanos() as i64);
-            dispatch_after_f(
-                when,
-                queue,
-                runnable.into_raw().as_ptr() as *mut c_void,
-                Some(trampoline),
-            );
-        }
-    }
-
-    fn dispatch_compat(&self, runnable: Runnable) {
-        unsafe {
-            dispatch_async_f(
-                dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH.try_into().unwrap(), 0),
-                runnable.into_raw().as_ptr() as *mut c_void,
-                Some(trampoline_compat),
-            );
-        }
-    }
-
-    fn dispatch_after_compat(&self, duration: Duration, runnable: Runnable) {
-        unsafe {
-            let queue =
-                dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH.try_into().unwrap(), 0);
-            let when = dispatch_time(DISPATCH_TIME_NOW as u64, duration.as_nanos() as i64);
-            dispatch_after_f(
-                when,
-                queue,
-                runnable.into_raw().as_ptr() as *mut c_void,
-                Some(trampoline_compat),
-            );
+            dispatch_after_f(when, queue, context, trampoline);
         }
     }
 }
