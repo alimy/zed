@@ -90,7 +90,7 @@ pub async fn run_evaluate_one(
     println!(
         "## Expected Context: \n\n```\n{}\n```\n\n",
         compare_context(
-            &example.example.expected_excerpts.alternatives
+            &example.example.expected_context.alternatives
                 [evaluation_result.context_alternative_ix],
             &predictions
         )
@@ -206,7 +206,7 @@ pub fn evaluate(example: &Example, preds: &PredictionDetails) -> EvaluationResul
         })
         .collect();
 
-    for expected_alternative in example.expected_excerpts.alternatives.iter() {
+    for expected_alternative in example.expected_context.alternatives.iter() {
         let expected_context_lines = expected_alternative
             .excerpts
             .iter()
