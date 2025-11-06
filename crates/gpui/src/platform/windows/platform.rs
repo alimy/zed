@@ -4,18 +4,14 @@ use std::{
     mem::ManuallyDrop,
     path::{Path, PathBuf},
     rc::{Rc, Weak},
-    sync::{Arc, LazyLock, atomic::AtomicUsize},
-    time::Instant,
+    sync::Arc,
 };
 
 use ::util::{ResultExt, paths::SanitizedPath};
 use anyhow::{Context as _, Result, anyhow};
-use async_task::Runnable;
-use collections::HashMap;
 use futures::channel::oneshot::{self, Receiver};
 use itertools::Itertools;
-use log::info;
-use parking_lot::{Mutex, RwLock};
+use parking_lot::RwLock;
 use smallvec::SmallVec;
 use windows::{
     UI::ViewManagement::UISettings,
@@ -50,7 +46,7 @@ struct WindowsPlatformInner {
     raw_window_handles: std::sync::Weak<RwLock<SmallVec<[SafeHwnd; 4]>>>,
     // The below members will never change throughout the entire lifecycle of the app.
     validation_number: usize,
-    main_receiver: flume::Receiver<Runnable<Bigus>>,
+    main_receiver: flume::Receiver<RunnableVariant>,
 }
 
 pub(crate) struct WindowsPlatformState {
@@ -96,7 +92,7 @@ impl WindowsPlatform {
             OleInitialize(None).context("unable to initialize Windows OLE")?;
         }
         let directx_devices = DirectXDevices::new().context("Creating DirectX devices")?;
-        let (main_sender, main_receiver) = flume::unbounded::<Runnable<Bigus>>();
+        let (main_sender, main_receiver) = flume::unbounded::<RunnableVariant>();
         let validation_number = if usize::BITS == 64 {
             rand::random::<u64>() as usize
         } else {
@@ -749,7 +745,9 @@ impl WindowsPlatformInner {
 
     #[inline]
     fn run_foreground_task(&self) -> Option<isize> {
-        drain_main_receiver(&self.main_receiver);
+        for runnable in self.main_receiver.drain() {
+            WindowsDispatcher::execute_runnable(runnable);
+        }
         Some(0)
     }
 
@@ -797,29 +795,6 @@ impl WindowsPlatformInner {
     }
 }
 
-pub(crate) fn drain_main_receiver(main_receiver: &flume::Receiver<Runnable<Bigus>>) {
-    let mut timings = HashMap::default();
-
-    let frame_buf = {
-        let index = FRAME_INDEX.load(std::sync::atomic::Ordering::Acquire) % FRAME_RING;
-        FRAME_BUF[index].clone()
-    };
-
-    let end_time = frame_buf.lock().end_time;
-
-    for runnable in main_receiver.drain() {
-        let name = runnable.metadata().location;
-        let start = Instant::now();
-        runnable.run();
-        let end = Instant::now();
-
-        *timings.entry(name).or_insert(0f64) += end.duration_since(start).as_secs_f64();
-    }
-
-    let mut frame_buf = frame_buf.lock();
-    frame_buf.timings.extend(timings);
-}
-
 impl Drop for WindowsPlatform {
     fn drop(&mut self) {
         unsafe {
@@ -846,7 +821,7 @@ pub(crate) struct WindowCreationInfo {
     pub(crate) windows_version: WindowsVersion,
     pub(crate) drop_target_helper: IDropTargetHelper,
     pub(crate) validation_number: usize,
-    pub(crate) main_receiver: flume::Receiver<Runnable<Bigus>>,
+    pub(crate) main_receiver: flume::Receiver<RunnableVariant>,
     pub(crate) platform_window_handle: HWND,
     pub(crate) disable_direct_composition: bool,
     pub(crate) directx_devices: DirectXDevices,
@@ -856,7 +831,7 @@ struct PlatformWindowCreateContext {
     inner: Option<Result<Rc<WindowsPlatformInner>>>,
     raw_window_handles: std::sync::Weak<RwLock<SmallVec<[SafeHwnd; 4]>>>,
     validation_number: usize,
-    main_receiver: Option<flume::Receiver<Runnable<Bigus>>>,
+    main_receiver: Option<flume::Receiver<RunnableVariant>>,
     directx_devices: Option<DirectXDevices>,
 }
 

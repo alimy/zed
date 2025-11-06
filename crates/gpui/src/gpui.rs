@@ -71,7 +71,6 @@ pub use app::*;
 pub(crate) use arena::*;
 pub use asset_cache::*;
 pub use assets::*;
-use collections::HashMap;
 pub use color::*;
 pub use ctor::ctor;
 pub use element::*;
@@ -86,7 +85,6 @@ pub use inspector::*;
 pub use interactive::*;
 use key_dispatch::*;
 pub use keymap::*;
-use parking_lot::Mutex;
 pub use path_builder::*;
 pub use platform::*;
 pub use refineable::*;
@@ -113,8 +111,6 @@ use std::{
     any::Any,
     borrow::BorrowMut,
     future::Future,
-    sync::{Arc, LazyLock, atomic::AtomicUsize},
-    time::Instant,
 };
 use taffy::TaffyLayoutEngine;
 
@@ -316,47 +312,4 @@ pub struct GpuSpecs {
     pub driver_name: String,
     /// Further information about the driver, as reported by Vulkan.
     pub driver_info: String,
-}
-
-pub(crate) static FRAME_INDEX: AtomicUsize = AtomicUsize::new(0);
-
-/// A
-#[derive(Debug, Clone)]
-pub struct FrameTimings {
-    /// A
-    pub frame_time: f64,
-    /// A
-    pub timings: HashMap<&'static core::panic::Location<'static>, f64>,
-    /// A
-    pub end_time: Option<Instant>,
-}
-
-/// TESTING
-pub static FRAME_RING: usize = 240;
-pub(crate) static FRAME_BUF: LazyLock<[Arc<Mutex<FrameTimings>>; FRAME_RING]> =
-    LazyLock::new(|| {
-        core::array::from_fn(|_| {
-            Arc::new(Mutex::new(FrameTimings {
-                frame_time: 0.0,
-                timings: HashMap::default(),
-                end_time: None,
-            }))
-        })
-    });
-
-/// A
-pub fn get_frame_timings() -> FrameTimings {
-    FRAME_BUF
-        [(FRAME_INDEX.load(std::sync::atomic::Ordering::Acquire) % FRAME_RING).saturating_sub(1)]
-    .lock()
-    .clone()
-}
-
-/// A
-pub fn get_all_timings() -> (Vec<FrameTimings>, usize) {
-    let frame_index = FRAME_INDEX.load(std::sync::atomic::Ordering::Acquire) % FRAME_RING;
-    (
-        FRAME_BUF.iter().map(|frame| frame.lock().clone()).collect(),
-        frame_index,
-    )
 }

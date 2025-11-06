@@ -30,10 +30,10 @@ use git_ui::git_panel::GitPanel;
 use git_ui::project_diff::ProjectDiffToolbar;
 use gpui::{
     Action, App, AppContext as _, AsyncApp, Context, DismissEvent, Element, Entity, EventEmitter,
-    FRAME_RING, FocusHandle, Focusable, FrameTimings, Hsla, KeyBinding, MouseButton, ParentElement,
-    PathPromptOptions, PromptLevel, ReadGlobal, SharedString, Styled, Task, TaskTiming,
-    TitlebarOptions, UpdateGlobal, Window, WindowKind, WindowOptions, actions, get_all_timings,
-    get_frame_timings, hsla, image_cache, point, px, retain_all, rgb, rgba,
+    FocusHandle, Focusable, Hsla, KeyBinding, MouseButton, ParentElement, PathPromptOptions,
+    PromptLevel, ReadGlobal, SharedString, Styled, Task, TaskTiming, TitlebarOptions, UpdateGlobal,
+    Window, WindowKind, WindowOptions, actions, hsla, image_cache, point, px, retain_all, rgb,
+    rgba,
 };
 use image_viewer::ImageInfo;
 use language::Capability;
