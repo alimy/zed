@@ -9654,7 +9654,7 @@ async fn test_buffer_changed_file_path_updates_git_diff(cx: &mut gpui::TestAppCo
 
     let buffer = project
         .update(cx, |project, cx| {
-            project.open_local_buffer("/dir/src/file_1.rs", cx)
+            project.open_local_buffer(path!("/dir/src/file_1.rs"), cx)
         })
         .await
         .unwrap();
